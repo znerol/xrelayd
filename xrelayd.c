@@ -35,11 +35,14 @@
 
 #include <stdlib.h>
 #include <stdio.h>
+#include <unistd.h>
 #include <string.h>
 #include <getopt.h>
 #include <netdb.h>
 #include <stdarg.h>
+#include <time.h>
 #include <errno.h>
+#include <signal.h>
 
 #include <netinet/tcp.h>
 
@@ -109,7 +112,13 @@ void sigchld_handler(int s)
 
 void kill_handler(int s)
 {
-    ILOG("caugth signal. exiting...");
+    char* signame="unknown";
+    switch(s) {
+        case SIGQUIT    : signame="QUIT"; break;
+        case SIGHUP     : signame="HUP"; break;
+        case SIGTERM    : signame="TERM"; break;
+    }
+    NLOG("Caugth %s signal. Terminate",signame);
     quit=1;
 }
 
@@ -148,6 +157,10 @@ void dolog(int prio, const char *fmt, ...)
     char    logprio[20];
 
     if(nosysl && prio <= loglevel) {
+        time_t  ct=time(NULL);
+        char*   cs=ctime(&ct);
+        fprintf(stderr,"%.15s ",&cs[4]);
+        
         getprio(prio,logprio,sizeof(logprio));
         fprintf(stderr,"[%-6s] ",logprio);
         va_start(ap, fmt);
@@ -199,6 +212,7 @@ void daemonize()
     signal(SIGTSTP,SIG_IGN); /* ignore tty signals */
     signal(SIGTTOU,SIG_IGN);
     signal(SIGTTIN,SIG_IGN);
+    signal(SIGQUIT,kill_handler); /* catch hangup signal */
     signal(SIGHUP,kill_handler); /* catch hangup signal */
     signal(SIGTERM,kill_handler); /* catch kill signal */
 }
@@ -304,6 +318,9 @@ void proxy_connection(
         ILOG("Handshake succeded");
     }
     
+    NLOG("Connected %s client %d.%d.%d.%d to %s server %s:%d",
+        sslserver ? "ssl" : "plain", client_ip[0],client_ip[1],client_ip[2],client_ip[3],
+        sslserver ? "plain" : "ssl", srv_host, srv_port);
     
     /*
      *  Proxy stuff
@@ -406,14 +423,18 @@ void proxy_connection(
     /*
      *  Cleanup
      */
+    ssl_free( &ssl );
+    memset( &ssl, 0, sizeof( ssl ) );
+    
     net_close(client_fd);
     ILOG("Closed %s connection from %d.%d.%d.%d",client_fd==*ssl_fd ? "ssl" : "plain",
         client_ip[0],client_ip[1],client_ip[2],client_ip[3]);
     net_close(server_fd);
     ILOG("Closed %s connection to %s:%d",server_fd==*ssl_fd ? "ssl" : "plain",srv_host,srv_port);
     
-    ssl_free( &ssl );
-    memset( &ssl, 0, sizeof( ssl ) );
+    NLOG("Closed connection between %s client %d.%d.%d.%d and %s server %s:%d",
+        sslserver ? "ssl" : "plain", client_ip[0],client_ip[1],client_ip[2],client_ip[3],
+        sslserver ? "plain" : "ssl", srv_host, srv_port);
 }
 
 int main(int argc, char** argv)
@@ -546,6 +567,7 @@ int main(int argc, char** argv)
     
 /* install handlers */
     signal(SIGCHLD,sigchld_handler); /* ignore child */
+    signal(SIGQUIT,kill_handler); /* catch hangup signal */
     signal(SIGHUP,kill_handler); /* catch hangup signal */
     signal(SIGTERM,kill_handler); /* catch kill signal */
     
@@ -603,9 +625,17 @@ int main(int argc, char** argv)
      *  Main connection loop
      */
     unsigned char   client_ip[4];
+    fd_set rs;
     
     NLOG("Listening for %s connections on server port %d",servermode ? "ssl" : "plain",srv_port);
     while (!quit) {
+        FD_ZERO(&rs);
+        FD_SET(srv_fd, &rs);
+        
+        if((ret = select(srv_fd+1,&rs,NULL,NULL,NULL))<0) {
+            continue;
+        }
+        
         ret = net_accept( srv_fd, &client_fd, client_ip );
         if(ret) {
             ELOG("Failed to accept client on server port %d: %08x, %s",srv_port,ret,strerror(errno));
@@ -647,5 +677,6 @@ fail:
         closelog();
     }
     
+    NLOG("Terminated with status %d",status);
     exit(status);
 }
