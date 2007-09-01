@@ -52,12 +52,12 @@
 #define SYSLOG_NAMES
 #include <syslog.h>
 
-
-#include "xyssl/havege.h"
-#include "xyssl/certs.h"
-#include "xyssl/x509.h"
-#include "xyssl/ssl.h"
-#include "xyssl/net.h"
+/* xassl includes */
+#include <xyssl/havege.h>
+#include <xyssl/certs.h>
+#include <xyssl/x509.h>
+#include <xyssl/ssl.h>
+#include <xyssl/net.h>
 
 // FIXME. implement some sort of DDOS prevention
 #define MAXCONNCOUNT 16
@@ -328,7 +328,7 @@ void proxy_connection(
         FD_SET(server_fd, &rs);
         FD_SET(client_fd, &rs);
         
-        DLOG("select with fdmax %d",fdmax);
+        DLOG("enter select. fdmax %d",fdmax);
         
         if((ret = select(fdmax,&rs,NULL,NULL,NULL))<0) {
             return;
@@ -338,12 +338,12 @@ void proxy_connection(
             break;
         }
         
-        DLOG("select returned %d. rs.fds_bits[0] %x",ret,rs.fds_bits[0]);
+        DLOG("select returned %d",ret);
         
         if(FD_ISSET(*ssl_fd,&rs)) {
-            DLOG("trying to ssl_read from fd %d",*ssl_fd);
-            
+            DLOG("ssl fd is set");
             for(;;) {
+                DLOG("trying read on from ssl fd %d",*ssl_fd);
                 len=sizeof(buf);
                 
                 if((rret = ssl_read(&ssl, buf, &len)))
@@ -352,11 +352,10 @@ void proxy_connection(
                 if((done=(len==0)))
                     break;
                 
-                DLOG("ssl_read: %d bytes",len);
-                DLOG("trying to net_send on fd %d",*plain_fd);
+                DLOG("read: %d bytes",len);
+                DLOG("trying to write on plain fd %d",*plain_fd);
                 if((wret = net_send(*plain_fd,buf,&len))) break;
                 DLOG("net_send: complete");
-                DLOG("trying to ssl_read from fd %d",*ssl_fd);
             }
             
             if(handle_sockerr("ssl_read",rret)) break;
@@ -364,9 +363,10 @@ void proxy_connection(
         }
         
         if(FD_ISSET(*plain_fd,&rs)) {
-            DLOG("trying to net_recv from fd %d",*plain_fd);
+            DLOG("plain fd is set");
             
             for(;;) {
+                DLOG("trying to read from plain fd %d",*plain_fd);
                 len=sizeof(buf);
                 
                 if((ret = net_recv(*plain_fd, buf, &len)))
@@ -375,11 +375,10 @@ void proxy_connection(
                 if((done=(len==0)))
                     break;
                 
-                DLOG("net_recv: %d bytes",len);
-                DLOG("trying to ssl_write on fd %d",*ssl_fd);
+                DLOG("read: %d bytes",len);
+                DLOG("trying to write on ssl fd %d",*ssl_fd);
                 if((wret = ssl_write(&ssl,buf,len))) break;
-                DLOG("ssl_write: complete");
-                DLOG("trying to net_recv from fd %d",*plain_fd);
+                DLOG("write: complete");
             }
             
             if(handle_sockerr("net_recv",rret)) break;

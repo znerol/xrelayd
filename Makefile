@@ -1,31 +1,40 @@
 # $Id$
+# 
+# if you want to compile against a compiled but not installed xyssl sourcetree
+# XYSSL_SOURCE=/path/to/xyssl-src
+
+DSTROOT=/usr/local
+BINDIR=$(DSTROOT)/bin
 
 CC=gcc
 LD=gcc
 
 CFLAGS=-g -Wall
-# CFLAGS=-02
+LIBS=-lxyssl
+
+ifneq ($(XYSSL_SOURCE),)
+	CPPFLAGS+=-I$(XYSSL_SOURCE)/include
+	LDFLAGS+=-L$(XYSSL_SOURCE)/library
+endif
 
 # source files
 OBJS=xrelayd.o
 
-XYSSL_DIR=../xyssl-0.7
-
-CFLAGS+=-I$(XYSSL_DIR)/include
-
-## dynamic linking
-LDFLAGS+=-L$(XYSSL_DIR)/library
-LIBS=-lxyssl
-
-## static linking
-# OBJS+=$(XYSSL_DIR)/library/libxyssl.a
-
 xrelayd: $(OBJS)
-	$(LD) $(LDFLAGS) $(LIBS) -o $@ $(OBJS)
+	$(LD) $(OBJS) $(LDFLAGS) $(LIBS) -o $@
 
 %.o: %.c
-	$(CC) $(CFLAGS) -c $<
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $<
 
+install: xrelayd
+	mkdir -p $(DSTROOT)
+	install -m0755 xrelayd $(BINDIR)
+
+.PHONY: uninstall
+uninstall:
+	rm -f $(BINDIR)/xrelayd
+
+.PHONY: clean
 clean:
 	rm -f *.o
 	rm -f xrelayd
