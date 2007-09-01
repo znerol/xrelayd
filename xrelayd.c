@@ -369,7 +369,7 @@ void proxy_connection(
                 DLOG("trying to read from plain fd %d",*plain_fd);
                 len=sizeof(buf);
                 
-                if((ret = net_recv(*plain_fd, buf, &len)))
+                if((rret = net_recv(*plain_fd, buf, &len)))
                     break;
                 
                 if((done=(len==0)))
