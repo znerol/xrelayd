@@ -1,0 +1,63 @@
+Xrelayd is a basic tcp proxy server which enables you to encrypt arbitrary
+protocols without changing ssl unaware deamons and client software. Xrelayd
+runs on UNIX systems including Linux and Mac OS X.
+
+INSTALL:
+- Get xrelayd:
+  wget http://znerol.ch/files/xrelayd-0.1.tar.gz
+  tar xzf xrelayd-0.1.tgz
+  
+- Get XySSL (http://xyssl.org/)
+  wget http://xyssl.org/code/download/xyssl-0.7.tgz
+  tar xzf xyssl-0.7.tgz
+
+- Patch XySSL (Needed at least for XySSL 0.7):
+  patch -d xyssl-0.7 -p1 < xrelayd-0.1/patches/xyssl-0.7-recvfix.patch
+
+- Build XySSL:
+  make -C xyssl-0.7
+  
+- Build xrelayd.
+  cd xrelayd-0.1
+  make XYSSL_SOURCE=../xyssl-0.7
+
+- Install xrelayd
+  make install
+
+If you build and install xrelayd like this, xyssl will be linked statically
+into xrelayd and you dont need to install the library which is the default
+behaviour of xyssl at the moment.
+
+USAGE:
+  ./xrelayd -h
+  usage: [-c] [-v] [-d localip:port] [-r remoteip:port]
+
+      -A      Certificate Authority file 
+      -p      private key and certificate chain PEM file name
+      -c      client mode. remote is ssl, local plain
+      -v      validate certificate
+      -d      listen locally on this [host:]port
+      -r      connect to remote machine on [host:]port
+      -P      pidfile
+      -f      foreground mode
+      -D      syslog level (0...7)
+
+EXAMPLE 1: ENABLE ENCRYPTION FOR HTTP SERVER RUNNING LOCALLY:
+- Create a self signed X509 certificate using openssl
+  openssl genrsa 1024 > host.key
+  openssl req -new -x509 -nodes -sha1 -days 365 -key host.key > host.cert
+
+- Run xrelayd in debug mode:
+  ./xrelayd -f -D7 -r localhost:80 -d 4433 -p host.key -A host.cert
+
+- Open the URI https://localhost:4433/ in your favorite browser.
+
+- Run xrelayd in daemon mode with standard loglevel:
+  ./xrelayd -r vdeb.local:80 -d 4433 -p host.key -A host.cert
+
+TODO:
+- Certificate generation without openssl.
+- Test client mode.
+- Certificate verifycation (-v).
+- Proper chroot and privilege dropping.
+- More examples.
