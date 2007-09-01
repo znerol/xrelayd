@@ -203,24 +203,24 @@ void daemonize()
     signal(SIGTERM,kill_handler); /* catch kill signal */
 }
 
-int handle_sockerr(char* func,int res)
+int handle_sockerr(char* op, char* conn,int res)
 {
     switch( res ) {
         case ERR_NET_WOULD_BLOCK:
-            DLOG( "%s connection would block.",func);
+            DLOG( "%s operation on %s connection would block",op,conn);
         case 0:
             return 0;
             
         case ERR_SSL_PEER_CLOSE_NOTIFY:
-            ILOG( "%s connection closed by peer",func );
+            ILOG( "%s connection closed by peer during %s operation",conn,op);
             break;
 
         case ERR_NET_CONN_RESET:
-            ILOG( "%s connection was reset by peer",func );
+            ILOG( "%s connection was reset by peer during %s operation",conn,op);
             break;
             
         default:
-            ELOG( "%s returned %08x", func, res );
+            ELOG( "%s operation on %s connection returned %08x",op,conn,res );
             break;
     }
     return res;
@@ -340,17 +340,25 @@ void proxy_connection(
         
         DLOG("select returned %d",ret);
         
+        /*
+         *  read from ssl and write to plain socket
+         */
         if(FD_ISSET(*ssl_fd,&rs)) {
             DLOG("ssl fd is set");
             for(;;) {
-                DLOG("trying read on from ssl fd %d",*ssl_fd);
+                DLOG("trying to read from ssl fd %d",*ssl_fd);
                 len=sizeof(buf);
                 
-                if((rret = ssl_read(&ssl, buf, &len)))
+                if((rret = ssl_read(&ssl, buf, &len))) {
+                    /* err or wouldblock */
                     break;
+                }
                 
-                if((done=(len==0)))
+                if(len==0) {
+                    /* eof */
+                    done=1;
                     break;
+                }
                 
                 DLOG("read: %d bytes",len);
                 DLOG("trying to write on plain fd %d",*plain_fd);
@@ -358,10 +366,13 @@ void proxy_connection(
                 DLOG("net_send: complete");
             }
             
-            if(handle_sockerr("ssl_read",rret)) break;
-            if(handle_sockerr("net_send",wret)) break;
+            if(handle_sockerr("read","ssl",rret)) break;
+            if(handle_sockerr("write","plain",wret)) break;
         }
         
+        /*
+         *  read from plain and write to ssl socket
+         */
         if(FD_ISSET(*plain_fd,&rs)) {
             DLOG("plain fd is set");
             
@@ -369,11 +380,16 @@ void proxy_connection(
                 DLOG("trying to read from plain fd %d",*plain_fd);
                 len=sizeof(buf);
                 
-                if((rret = net_recv(*plain_fd, buf, &len)))
+                if((rret = net_recv(*plain_fd, buf, &len))) {
+                    /* err or wouldblock */
                     break;
+                }
                 
-                if((done=(len==0)))
+                if(len==0) {
+                    /* eof */
+                    done=1;
                     break;
+                }
                 
                 DLOG("read: %d bytes",len);
                 DLOG("trying to write on ssl fd %d",*ssl_fd);
@@ -381,8 +397,8 @@ void proxy_connection(
                 DLOG("write: complete");
             }
             
-            if(handle_sockerr("net_recv",rret)) break;
-            if(handle_sockerr("ssl_write",wret)) break;
+            if(handle_sockerr("read","plain",rret)) break;
+            if(handle_sockerr("write","ssl",wret)) break;
             ssl_flush_output(&ssl);
         }
     }
