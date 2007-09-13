@@ -68,6 +68,9 @@
 // FIXME. configurable?
 #define RUNNING_DIR "/"
 
+#define DEFAULT_CERT_SUBJECT "CN='localhost'"
+#define DEFAULT_CERT_TIMESPAN 31536000
+
 void dolog(int prio, const char *fmt, ...);
 
 #ifdef NDEBUG
@@ -87,14 +90,21 @@ void dolog(int prio, const char *fmt, ...);
  */
 int xrly_ciphers[] =
 {
-    // TLS1_EDH_RSA_AES_256_SHA,
-    // SSL3_EDH_RSA_DES_168_SHA,
+#if !defined(NO_AES)
     TLS1_RSA_AES_256_SHA,
+#endif
+#if !defined(NO_DES)
     SSL3_RSA_DES_168_SHA,
-    // SSL3_RSA_RC4_128_SHA,
-    // SSL3_RSA_RC4_128_MD5,
+#endif
+#if !defined(NO_ARC4)
+    SSL3_RSA_RC4_128_SHA,
+    SSL3_RSA_RC4_128_MD5,
+#endif
     0
 };
+
+/* key generation */
+#define EXPONENT 65537
 
 int             servermode = 1;
 char            *dst_host = "localhost";
@@ -133,7 +143,13 @@ void usage(int status)
                     "    -r      connect to remote machine on [host:]port\n"
                     "    -P      pidfile\n"
                     "    -f      foreground mode\n"
-                    "    -D      syslog level (0...7)\n");
+                    "    -D      syslog level (0...7)\n"
+		    "\n"
+		    "  Options for private key and x509 certificate generation\n"
+ 		    "    -K      generate private key and certificate. arg=keylen\n"
+		    "    -U      subjectline for certificate. specify at least CN\n"
+		    "    -Y      number of days before this cert becomes invalid\n"
+		    "\n");
     exit(status);
 }
 
@@ -446,14 +462,17 @@ int main(int argc, char** argv)
     char            *certfile = NULL; //"certSrv.pem";
     // int             vlevel = 0;
     char            *cpos;
-    int             intarg,tmpport;
-    char            c;
-    
+    int             c,intarg,tmpport,genstuff=0,exitaftergen=0,keysize=1024;
+    char	    *cert_subject=DEFAULT_CERT_SUBJECT;
+    time_t	    cert_notbefore=time(NULL);
+    time_t	    cert_notafter=0;
+    int		    cert_timespan=DEFAULT_CERT_TIMESPAN;
+
     // return code
     int             status=1;
     
     for (;;) {
-        c = getopt (argc, argv, "VD:P:fo:cd:r:p:A:v:h");
+        c = getopt (argc, argv, "VD:P:fo:cd:r:p:A:K::U:Y:v:h");
         if (c == -1) {
             break;
         }
@@ -553,7 +572,29 @@ int main(int argc, char** argv)
             case 'V':
                 // version
                 break;
-                
+
+	    case 'K':
+		// generate keys + certificate
+		genstuff=1;
+		if(optarg) {
+		    keysize=strtol(optarg,NULL,0);
+		    if(keysize>2048 || keysize<128) {
+			usage(1);
+		    }
+		}
+		break;
+	    
+	    case 'U':
+		cert_subject=optarg;
+		break;
+
+	    case 'Y':
+		cert_timespan = 86400 * strtol(optarg,NULL,0);
+		if(cert_timespan<=0) {
+		    usage(1);
+		}
+		break;
+            
             case '?':
             case 'h':
                 usage(0);
@@ -565,6 +606,15 @@ int main(int argc, char** argv)
         }
     }
     
+    if(!srv_port || !dst_port) {
+	if(genstuff) {
+	    exitaftergen=1;
+	}
+	else {
+	    usage(1);
+	}
+    }
+
 /* install handlers */
     signal(SIGCHLD,sigchld_handler); /* ignore child */
     signal(SIGQUIT,kill_handler); /* catch hangup signal */
@@ -578,26 +628,26 @@ int main(int argc, char** argv)
     
     x509_cert       cert;
     rsa_context     key;
+    havege_state    hs;
     int             ret;
     
-    memset( &cert, 0, sizeof( x509_cert ) );
-    
-    if(certfile) {
-        ILOG("Loading the server certificate");
-        ret = x509_read_crtfile( &cert, certfile);
-        if(ret) {
-            ELOG("Failed to load server certificate: %08x, %s",ret,strerror(errno));
-            goto fail;
-        }
+    // key
+    if(genstuff && servermode) {
+	// generate key if desired
+	ILOG("Generating private key");
+	havege_init( &hs );
+	ret = rsa_gen_key( &key, keysize, EXPONENT, havege_rand, &hs);
+	if(ret) {
+	    ELOG("Failed to generate private key: %08x",ret);
+	    goto fail;
+	}
+	if(keyfile) {
+	    // FIXME: write out PEM-keyfile here	
+	}
     }
-    else if(servermode){
-        ELOG("A certificate is required in server mode");
-        usage(1);
-    }
-    
-    if(keyfile) {
+    else if(keyfile) {
         ILOG("Loading the private key");
-        ret = x509_read_keyfile( &key, keyfile, NULL);
+        ret = x509_read_keyfile(&key, keyfile, NULL);
         if(ret) {
             ELOG("Failed to load private key: %08x, %s",ret,strerror(errno));
             goto fail;
@@ -608,6 +658,59 @@ int main(int argc, char** argv)
         usage(1);
     }
     
+    // cert
+    memset(&cert, 0, sizeof(x509_cert));
+    x509_raw raw_cert;
+    char    notbefore[24],notafter[24];
+
+    if(genstuff && servermode) {
+	// generate self signed certificate
+	ILOG("Generating x509 certificate");
+	x509_init_raw(&raw_cert);
+
+	x509_add_pubkey(&raw_cert,&key);
+	x509_create_subject(&raw_cert,cert_subject);
+	
+	struct tm *tm;
+	tm=gmtime(&cert_notbefore);
+	strftime(notbefore,sizeof(notbefore),"%Y-%m-%d %H:%M:%S %Z",tm);
+
+	if(!cert_notafter) {
+	    cert_notafter=cert_notbefore + cert_timespan;
+	}
+	tm=gmtime(&cert_notafter);
+	strftime(notafter,sizeof(notafter),"%Y-%m-%d %H:%M:%S %Z",tm);
+	
+	x509_create_validity(&raw_cert,notbefore,notafter); 
+	x509_create_selfsign(&raw_cert,&key,1);
+	
+	// convert raw to cert.
+	x509_add_certs(&cert, raw_cert.raw.data, raw_cert.raw.len);
+
+	if(certfile) {
+	    // FIXME: write cert in PEM format
+	
+	}
+
+	x509_free_raw(&raw_cert);
+    }
+    else if(certfile) {
+        ILOG("Loading the server certificate");
+        ret = x509_read_crtfile(&cert, certfile);
+        if(ret) {
+            ELOG("Failed to load server certificate: %08x, %s",ret,strerror(errno));
+            goto fail;
+        }
+    }
+    else if(servermode){
+        ELOG("A certificate is required in server mode");
+        usage(1);
+    }
+    
+    if(exitaftergen) {
+	goto succeed;
+    }
+
     // go to background
     if(!nofork) {
         daemonize();
@@ -663,13 +766,16 @@ int main(int argc, char** argv)
         // parent
         close(client_fd);
     }
-    
+
+succeed: 
     status=0;
     
 fail:
-    NLOG("Closing server port %d",srv_port);
-    net_close(srv_fd);
-    
+    if(srv_port) {
+        NLOG("Closing server port %d",srv_port);
+	net_close(srv_fd);
+    }
+
     x509_free_cert( &cert );
     rsa_free( &key );
     
