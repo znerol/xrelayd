@@ -642,7 +642,8 @@ int main(int argc, char** argv)
 	    goto fail;
 	}
 	if(keyfile) {
-	    // FIXME: write out PEM-keyfile here	
+	    // write out PEM-keyfile here
+	    x509_write_keyfile(&key, keyfile, X509_OUTPUT_PEM); 
 	}
     }
     else if(keyfile) {
@@ -682,14 +683,14 @@ int main(int argc, char** argv)
 	strftime(notafter,sizeof(notafter),"%Y-%m-%d %H:%M:%S %Z",tm);
 	
 	x509_create_validity(&raw_cert,notbefore,notafter); 
-	x509_create_selfsign(&raw_cert,&key,1);
+	x509_create_selfsign(&raw_cert,&key);
 	
 	// convert raw to cert.
 	x509_add_certs(&cert, raw_cert.raw.data, raw_cert.raw.len);
 
 	if(certfile) {
-	    // FIXME: write cert in PEM format
-	
+	    // write cert in PEM format
+	    x509_write_crtfile(&cert, certfile, X509_OUTPUT_PEM);	
 	}
 
 	x509_free_raw(&raw_cert);
