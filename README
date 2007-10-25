@@ -2,24 +2,25 @@ Xrelayd is a basic tcp proxy server which enables you to encrypt arbitrary
 protocols without changing ssl unaware deamons and client software. Xrelayd
 runs on UNIX systems including Linux and Mac OS X.
 
+
 INSTALL:
 - Get xrelayd:
-  wget http://znerol.ch/files/xrelayd-0.1.tar.gz
-  tar xzf xrelayd-0.1.tgz
+  wget http://znerol.ch/files/xrelayd-0.2.tar.gz
+  tar xzf xrelayd-0.2.tgz
   
 - Get XySSL (http://xyssl.org/)
-  wget http://xyssl.org/code/download/xyssl-0.7.tgz
-  tar xzf xyssl-0.7.tgz
+  wget http://xyssl.org/code/download/xyssl-0.8.tgz
+  tar xzf xyssl-0.8.tgz
 
-- Patch XySSL (Needed at least for XySSL 0.7):
-  patch -d xyssl-0.7 -p1 < xrelayd-0.1/patches/xyssl-0.7-recvfix.patch
+- Patch XySSL (Needed at least for XySSL 0.8):
+  patch -d xyssl-0.8 -p1 < xrelayd-0.2/patches/xyssl-0.8-fix_x509_write.patch
 
 - Build XySSL:
-  make -C xyssl-0.7
+  make -C xyssl-0.8
   
 - Build xrelayd.
-  cd xrelayd-0.1
-  make XYSSL_SOURCE=../xyssl-0.7
+  cd xrelayd-0.2
+  make XYSSL_SOURCE=../xyssl-0.8
 
 - Install xrelayd
   make install
@@ -28,11 +29,11 @@ If you build and install xrelayd like this, xyssl will be linked statically
 into xrelayd and you dont need to install the library which is the default
 behaviour of xyssl at the moment.
 
+
 USAGE:
-  ./xrelayd -h
   usage: [-c] [-v] [-d localip:port] [-r remoteip:port]
 
-      -A      Certificate Authority file 
+      -A      Server certificate file (may change to CA file in future) 
       -p      private key and certificate chain PEM file name
       -c      client mode. remote is ssl, local plain
       -v      validate certificate
@@ -42,10 +43,15 @@ USAGE:
       -f      foreground mode
       -D      syslog level (0...7)
 
-EXAMPLE 1: ENABLE ENCRYPTION FOR HTTP SERVER RUNNING LOCALLY:
-- Create a self signed X509 certificate using openssl
-  openssl genrsa 1024 > host.key
-  openssl req -new -x509 -nodes -sha1 -days 365 -key host.key > host.cert
+    Options for private key and x509 certificate generation
+      -K      generate private key and certificate. arg=keylen
+      -U      subjectline for certificate. specify at least CN
+      -Y      number of days before this cert becomes invalid
+
+
+EXAMPLE: ENABLE ENCRYPTION FOR HTTP SERVER RUNNING LOCALLY:
+- Create a RSA key and self signed X509 certificate using xrelayd
+  ./xrelayd -f -K 1024 -p host.key -U "CN=localhost" -p host.key -A host.cert
 
 - Run xrelayd in debug mode:
   ./xrelayd -f -D7 -r localhost:80 -d 4433 -p host.key -A host.cert
@@ -55,8 +61,20 @@ EXAMPLE 1: ENABLE ENCRYPTION FOR HTTP SERVER RUNNING LOCALLY:
 - Run xrelayd in daemon mode with standard loglevel:
   ./xrelayd -r vdeb.local:80 -d 4433 -p host.key -A host.cert
 
+
+CHANGES:
+
+2007-10-26 Version 0.2
+- Based on xyssl 0.8
+- Generation of RSA-keys and self signed certificate
+- Fixed bug preventing big uploads (POST) when operated as a HTTPS server
+
+2007-09-01 Version 0.1
+- Initial release. No key/cert-generation yet
+- Based on xyssl 0.7
+
+
 TODO:
-- Certificate generation without openssl.
 - Test client mode.
 - Certificate verifycation (-v).
 - Proper chroot and privilege dropping.
