@@ -91,14 +91,14 @@ void dolog(int prio, const char *fmt, ...);
 int xrly_ciphers[] =
 {
 #if !defined(NO_AES)
-    TLS1_RSA_AES_256_SHA,
+    SSL_RSA_AES_256_SHA,
 #endif
 #if !defined(NO_DES)
-    SSL3_RSA_DES_168_SHA,
+    SSL_RSA_DES_168_SHA,
 #endif
 #if !defined(NO_ARC4)
-    SSL3_RSA_RC4_128_SHA,
-    SSL3_RSA_RC4_128_MD5,
+    SSL_RSA_RC4_128_SHA,
+    SSL_RSA_RC4_128_MD5,
 #endif
     0
 };
@@ -117,7 +117,7 @@ int loglevel = LOG_NOTICE;
 
 void sigchld_handler(int s)
 {
-	while(waitpid(-1, NULL, WNOHANG) > 0);
+        while(waitpid(-1, NULL, WNOHANG) > 0);
 }
 
 void kill_handler(int s)
@@ -144,12 +144,12 @@ void usage(int status)
                     "    -P      pidfile\n"
                     "    -f      foreground mode\n"
                     "    -D      syslog level (0...7)\n"
-		    "\n"
-		    "  Options for private key and x509 certificate generation\n"
- 		    "    -K      generate private key and certificate. arg=keylen\n"
-		    "    -U      subjectline for certificate. specify at least CN\n"
-		    "    -Y      number of days before this cert becomes invalid\n"
-		    "\n");
+                    "\n"
+                    "  Options for private key and x509 certificate generation\n"
+                    "    -K      generate private key and certificate. arg=keylen\n"
+                    "    -U      subjectline for certificate. specify at least CN\n"
+                    "    -Y      number of days before this cert becomes invalid\n"
+                    "\n");
     exit(status);
 }
 
@@ -175,10 +175,10 @@ void dolog(int prio, const char *fmt, ...)
     if(nosysl && prio <= loglevel) {
         time_t  ct=time(NULL);
         char*   cs=ctime(&ct);
-        fprintf(stderr,"%.15s ",&cs[4]);
         
         getprio(prio,logprio,sizeof(logprio));
         fprintf(stderr,"[%-6s] ",logprio);
+        fprintf(stderr,"%.15s xrelayd[%.4d] ",&cs[4],getpid());
         va_start(ap, fmt);
         (void) vfprintf(stderr, fmt, ap);
         va_end(ap);
@@ -233,19 +233,21 @@ void daemonize()
     signal(SIGTERM,kill_handler); /* catch kill signal */
 }
 
-int handle_sockerr(char* op, char* conn,int res)
+int handle_sockres(char* op, char* conn,int res)
 {
+    if(res>0) return 0;
+    
     switch( res ) {
-        case ERR_NET_WOULD_BLOCK:
+        case XYSSL_ERR_NET_TRY_AGAIN:
             DLOG( "%s operation on %s connection would block",op,conn);
         case 0:
             return 0;
             
-        case ERR_SSL_PEER_CLOSE_NOTIFY:
+        case XYSSL_ERR_SSL_PEER_CLOSE_NOTIFY:
             ILOG( "%s connection closed by peer during %s operation",conn,op);
             break;
 
-        case ERR_NET_CONN_RESET:
+        case XYSSL_ERR_NET_CONN_RESET:
             ILOG( "%s connection was reset by peer during %s operation",conn,op);
             break;
             
@@ -254,6 +256,105 @@ int handle_sockerr(char* op, char* conn,int res)
             break;
     }
     return res;
+}
+
+/*
+ * These session callbacks use a simple chained list
+ * to store and retrieve the session information.
+ */
+ssl_session *s_list_1st = NULL;
+ssl_session *cur, *prv;
+
+static int my_get_session( ssl_context *ssl )
+{
+    time_t t = time( NULL );
+
+    if( ssl->resume == 0 )
+        return( 1 );
+
+    cur = s_list_1st;
+    prv = NULL;
+
+    while( cur != NULL )
+    {
+        prv = cur;
+        cur = cur->next;
+
+        if( ssl->timeout != 0 && t - prv->start > ssl->timeout )
+            continue;
+
+        if( ssl->session->cipher != prv->cipher ||
+            ssl->session->length != prv->length )
+            continue;
+
+        if( memcmp( ssl->session->id, prv->id, prv->length ) != 0 )
+            continue;
+
+        memcpy( ssl->session->master, prv->master, 48 );
+        return( 0 );
+    }
+
+    return( 1 );
+}
+
+static int my_set_session( ssl_context *ssl )
+{
+    time_t t = time( NULL );
+
+    cur = s_list_1st;
+    prv = NULL;
+
+    while( cur != NULL )
+    {
+        if( ssl->timeout != 0 && t - cur->start > ssl->timeout )
+            break; /* expired, reuse this slot */
+
+        if( memcmp( ssl->session->id, cur->id, cur->length ) == 0 )
+            break; /* client reconnected */
+
+        prv = cur;
+        cur = cur->next;
+    }
+
+    if( cur == NULL )
+    {
+        cur = (ssl_session *) malloc( sizeof( ssl_session ) );
+        if( cur == NULL )
+            return( 1 );
+
+        if( prv == NULL )
+              s_list_1st = cur;
+        else  prv->next  = cur;
+    }
+
+    memcpy( cur, ssl->session, sizeof( ssl_session ) );
+
+    return( 0 );
+}
+
+inline int proxy_send_all( int (*f_send)(void *, unsigned char *, int),
+                           void *ctx, unsigned char *buf, int len, int *eof)
+{
+    int     ret=0;
+    while(len) {
+        if ((ret = f_send(ctx,buf,len)) <= 0) {
+            if( ret == XYSSL_ERR_NET_TRY_AGAIN ) continue;
+            break;
+        }
+        len-=ret;
+        buf+=ret;
+    }
+    *eof |= (ret == XYSSL_ERR_NET_CONN_RESET);
+    return ret;
+}
+
+inline int proxy_recv_available( int (*f_recv)(void *, unsigned char *, int),
+                                 void *ctx, unsigned char *buf, int len, int *eof)
+{
+    int     ret=0;
+    ret = f_recv(ctx,buf,len);
+    *eof |= (ret == XYSSL_ERR_NET_CONN_RESET);
+    return ret;
 }
 
 void proxy_connection(
@@ -277,7 +378,7 @@ void proxy_connection(
      *  Setup ssl
      */
     ssl_context     ssl;
-    if( ( ret = ssl_init( &ssl, 0 ) ) != 0 ) {
+    if( ( ret = ssl_init( &ssl ) ) != 0 ) {
         ELOG("Failed to initialize ssl: %08x", ret);
         return;
     }
@@ -291,24 +392,26 @@ void proxy_connection(
     /* random number generation */
     havege_state hs;
     havege_init( &hs );
-    ssl_set_rng_func( &ssl, havege_rand, &hs );
+    ssl_set_rng( &ssl, havege_rand, &hs );
     
     /* io */
     int     *ssl_fd = sslserver ? &client_fd : &server_fd;
     int     *plain_fd = sslserver ? &server_fd : &client_fd;
-    ssl_set_io_files( &ssl, *ssl_fd, *ssl_fd );
+    ssl_set_bio( &ssl, net_recv, ssl_fd,
+                       net_send, ssl_fd );
     
     /* ciphers */
-    ssl_set_ciphlist( &ssl, xrly_ciphers );
+    ssl_set_ciphers( &ssl, xrly_ciphers );
     
     if(cert && key) {
         ssl_set_ca_chain( &ssl, cert->next, NULL );
-        ssl_set_rsa_cert( &ssl, cert, key );
+        ssl_set_own_cert( &ssl, cert, key );
     }
-    if(sslserver){
-        static unsigned char session_table[SSL_SESSION_TBL_LEN];
-        ssl_set_sidtable( &ssl, session_table );
-    }
+    
+    /* session caching */
+    ssl_session ssn;
+    ssl_set_scb( &ssl, my_get_session, my_set_session );
+    ssl_set_session( &ssl, 1, 0, &ssn );
     
     ILOG("Initialized SSL for %s mode",sslserver ? "server" : "client");
     
@@ -326,10 +429,11 @@ void proxy_connection(
      */
     if(sslserver) {
         ILOG("Performing ssl handshake");
-        ret = ssl_server_start( &ssl );
-        if(ret) {
-            ELOG("Failed to start ssl server: %08x", ret);
-            return;
+        while( ( ret = ssl_handshake( &ssl ) ) != 0 ) {
+            if( ret != XYSSL_ERR_NET_TRY_AGAIN ) {
+                ELOG("SSL handshake failed: %08x", ret);
+                return;
+            }
         }
         ILOG("Handshake succeded");
     }
@@ -348,8 +452,7 @@ void proxy_connection(
     fd_set rs;
     int fdmax = 1 + (server_fd > client_fd ? server_fd : client_fd);
     
-    unsigned char buf[1024];
-    int len;
+    unsigned char buf[2048];
     
     net_set_nonblock(*plain_fd);
     net_set_nonblock(*ssl_fd);
@@ -378,29 +481,18 @@ void proxy_connection(
          */
         if(FD_ISSET(*ssl_fd,&rs)) {
             DLOG("ssl fd is set");
-            for(;;) {
+            do {
                 DLOG("trying to read from ssl fd %d",*ssl_fd);
-                len=sizeof(buf);
+                if((rret = proxy_recv_available(ssl_read, &ssl, buf, sizeof(buf), &done)) < 0) break;
+                DLOG("read: %d bytes",rret);
                 
-                if((rret = ssl_read(&ssl, buf, &len))) {
-                    /* err or wouldblock */
-                    break;
-                }
-                
-                if(len==0) {
-                    /* eof */
-                    done=1;
-                    break;
-                }
-                
-                DLOG("read: %d bytes",len);
                 DLOG("trying to write on plain fd %d",*plain_fd);
-                if((wret = net_send(*plain_fd,buf,&len))) break;
-                DLOG("net_send: complete");
-            }
+                if((wret = proxy_send_all(net_send, (void*)plain_fd, buf, rret, &done)) < 0) break;
+                DLOG("write: plain complete");
+            } while(0);
             
-            if(handle_sockerr("read","ssl",rret)) break;
-            if(handle_sockerr("write","plain",wret)) break;
+            if(handle_sockres("read","ssl",rret)) break;
+            if(handle_sockres("write","plain",wret)) break;
         }
         
         /*
@@ -408,30 +500,18 @@ void proxy_connection(
          */
         if(FD_ISSET(*plain_fd,&rs)) {
             DLOG("plain fd is set");
-            
-            for(;;) {
+            do {
                 DLOG("trying to read from plain fd %d",*plain_fd);
-                len=sizeof(buf);
+                if((rret = proxy_recv_available(net_recv, plain_fd, buf, sizeof(buf), &done)) < 0) break;
+                DLOG("read: %d bytes",rret);
                 
-                if((rret = net_recv(*plain_fd, buf, &len))) {
-                    /* err or wouldblock */
-                    break;
-                }
-                
-                if(len==0) {
-                    /* eof */
-                    done=1;
-                    break;
-                }
-                
-                DLOG("read: %d bytes",len);
                 DLOG("trying to write on ssl fd %d",*ssl_fd);
-                if((wret = ssl_write(&ssl,buf,len))) break;
-                DLOG("write: complete");
-            }
+                if((wret = proxy_send_all(ssl_write, (void*)&ssl, buf, rret, &done)) < 0) break;
+                DLOG("write: ssl complete");
+            } while(0);
             
-            if(handle_sockerr("read","plain",rret)) break;
-            if(handle_sockerr("write","ssl",wret)) break;
+            if(handle_sockres("read","plain",rret)) break;
+            if(handle_sockres("write","ssl",wret)) break;
             ssl_flush_output(&ssl);
         }
     }
@@ -463,10 +543,10 @@ int main(int argc, char** argv)
     // int             vlevel = 0;
     char            *cpos;
     int             c,intarg,tmpport,genstuff=0,exitaftergen=0,keysize=1024;
-    char	    *cert_subject=DEFAULT_CERT_SUBJECT;
-    time_t	    cert_notbefore=time(NULL);
-    time_t	    cert_notafter=0;
-    int		    cert_timespan=DEFAULT_CERT_TIMESPAN;
+    char            *cert_subject=DEFAULT_CERT_SUBJECT;
+    time_t          cert_notbefore=time(NULL);
+    time_t          cert_notafter=0;
+    int             cert_timespan=DEFAULT_CERT_TIMESPAN;
 
     // return code
     int             status=1;
@@ -573,27 +653,27 @@ int main(int argc, char** argv)
                 // version
                 break;
 
-	    case 'K':
-		// generate keys + certificate
-		genstuff=1;
-		if(optarg) {
-		    keysize=strtol(optarg,NULL,0);
-		    if(keysize>2048 || keysize<128) {
-			usage(1);
-		    }
-		}
-		break;
-	    
-	    case 'U':
-		cert_subject=optarg;
-		break;
+            case 'K':
+                // generate keys + certificate
+                genstuff=1;
+                if(optarg) {
+                    keysize=strtol(optarg,NULL,0);
+                    if(keysize>2048 || keysize<128) {
+                        usage(1);
+                    }
+                }
+                break;
+            
+            case 'U':
+                cert_subject=optarg;
+                break;
 
-	    case 'Y':
-		cert_timespan = 86400 * strtol(optarg,NULL,0);
-		if(cert_timespan<=0) {
-		    usage(1);
-		}
-		break;
+            case 'Y':
+                cert_timespan = 86400 * strtol(optarg,NULL,0);
+                if(cert_timespan<=0) {
+                    usage(1);
+                }
+                break;
             
             case '?':
             case 'h':
@@ -607,12 +687,12 @@ int main(int argc, char** argv)
     }
     
     if(!srv_port || !dst_port) {
-	if(genstuff) {
-	    exitaftergen=1;
-	}
-	else {
-	    usage(1);
-	}
+        if(genstuff) {
+            exitaftergen=1;
+        }
+        else {
+            usage(1);
+        }
     }
 
 /* install handlers */
@@ -633,22 +713,23 @@ int main(int argc, char** argv)
     
     // key
     if(genstuff && servermode) {
-	// generate key if desired
-	ILOG("Generating private key");
-	havege_init( &hs );
-	ret = rsa_gen_key( &key, keysize, EXPONENT, havege_rand, &hs);
-	if(ret) {
-	    ELOG("Failed to generate private key: %08x",ret);
-	    goto fail;
-	}
-	if(keyfile) {
-	    // write out PEM-keyfile here
-	    x509_write_keyfile(&key, keyfile, X509_OUTPUT_PEM); 
-	}
+        // generate key if desired
+        ILOG("Generating private key");
+        havege_init( &hs );
+        rsa_init( &key, RSA_PKCS_V15, 0, havege_rand, &hs );
+        ret = rsa_gen_key( &key, keysize, EXPONENT);
+        if(ret) {
+            ELOG("Failed to generate private key: %08x",ret);
+            goto fail;
+        }
+        if(keyfile) {
+            // write out PEM-keyfile here
+            x509_write_keyfile(&key, keyfile, X509_OUTPUT_PEM); 
+        }
     }
     else if(keyfile) {
         ILOG("Loading the private key");
-        ret = x509_read_keyfile(&key, keyfile, NULL);
+        ret = x509parse_keyfile(&key, keyfile, NULL);
         if(ret) {
             ELOG("Failed to load private key: %08x, %s",ret,strerror(errno));
             goto fail;
@@ -665,39 +746,39 @@ int main(int argc, char** argv)
     char    notbefore[24],notafter[24];
 
     if(genstuff && servermode) {
-	// generate self signed certificate
-	ILOG("Generating x509 certificate");
-	x509_init_raw(&raw_cert);
+        // generate self signed certificate
+        ILOG("Generating x509 certificate");
+        x509_init_raw(&raw_cert);
 
-	x509_add_pubkey(&raw_cert,&key);
-	x509_create_subject(&raw_cert,cert_subject);
-	
-	struct tm *tm;
-	tm=gmtime(&cert_notbefore);
-	strftime(notbefore,sizeof(notbefore),"%Y-%m-%d %H:%M:%S %Z",tm);
+        x509_add_pubkey(&raw_cert,&key);
+        x509_create_subject(&raw_cert,cert_subject);
+        
+        struct tm *tm;
+        tm=gmtime(&cert_notbefore);
+        strftime(notbefore,sizeof(notbefore),"%Y-%m-%d %H:%M:%S %Z",tm);
 
-	if(!cert_notafter) {
-	    cert_notafter=cert_notbefore + cert_timespan;
-	}
-	tm=gmtime(&cert_notafter);
-	strftime(notafter,sizeof(notafter),"%Y-%m-%d %H:%M:%S %Z",tm);
-	
-	x509_create_validity(&raw_cert,notbefore,notafter); 
-	x509_create_selfsign(&raw_cert,&key);
-	
-	// convert raw to cert.
-	x509_add_certs(&cert, raw_cert.raw.data, raw_cert.raw.len);
-
-	if(certfile) {
-	    // write cert in PEM format
-	    x509_write_crtfile(&cert, certfile, X509_OUTPUT_PEM);	
-	}
-
-	x509_free_raw(&raw_cert);
+        if(!cert_notafter) {
+            cert_notafter=cert_notbefore + cert_timespan;
+        }
+        tm=gmtime(&cert_notafter);
+        strftime(notafter,sizeof(notafter),"%Y-%m-%d %H:%M:%S %Z",tm);
+        
+        x509_create_validity(&raw_cert,notbefore,notafter); 
+        x509_create_selfsign(&raw_cert,&key);
+        
+        if(certfile) {
+            // write cert in PEM format
+            x509_write_crtfile(&raw_cert, certfile, X509_OUTPUT_PEM);       
+        }
+        
+        // convert raw to cert.
+        x509parse_crt(&cert, raw_cert.raw.data, raw_cert.raw.len);
+        
+        x509_free_raw(&raw_cert);
     }
     else if(certfile) {
         ILOG("Loading the server certificate");
-        ret = x509_read_crtfile(&cert, certfile);
+        ret = x509parse_crtfile(&cert, certfile);
         if(ret) {
             ELOG("Failed to load server certificate: %08x, %s",ret,strerror(errno));
             goto fail;
@@ -709,7 +790,7 @@ int main(int argc, char** argv)
     }
     
     if(exitaftergen) {
-	goto succeed;
+        goto succeed;
     }
 
     // go to background
@@ -774,10 +855,10 @@ succeed:
 fail:
     if(srv_port) {
         NLOG("Closing server port %d",srv_port);
-	net_close(srv_fd);
+        net_close(srv_fd);
     }
 
-    x509_free_cert( &cert );
+    x509_free( &cert );
     rsa_free( &key );
     
     if(!nosysl) {
