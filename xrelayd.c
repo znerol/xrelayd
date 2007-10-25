@@ -135,7 +135,7 @@ void kill_handler(int s)
 void usage(int status)
 {
     fprintf(stderr, "usage: [-c] [-v] [-d localip:port] [-r remoteip:port]\n\n"
-                    "    -A      Certificate Authority file \n"
+                    "    -A      Server certificate file (may change to CA file in future) \n"
                     "    -p      private key and certificate chain PEM file name\n"
                     "    -c      client mode. remote is ssl, local plain\n"
                     "    -v      validate certificate\n"
@@ -552,7 +552,7 @@ int main(int argc, char** argv)
     int             status=1;
     
     for (;;) {
-        c = getopt (argc, argv, "VD:P:fo:cd:r:p:A:K::U:Y:v:h");
+        c = getopt (argc, argv, "VD:P:fo:cd:r:p:A:K::U::Y:v:h");
         if (c == -1) {
             break;
         }
@@ -665,7 +665,9 @@ int main(int argc, char** argv)
                 break;
             
             case 'U':
-                cert_subject=optarg;
+                genstuff=1;
+                if(optarg)
+                    cert_subject=optarg;
                 break;
 
             case 'Y':
