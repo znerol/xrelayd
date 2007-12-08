@@ -726,7 +726,7 @@ int main(int argc, char** argv)
         }
         if(keyfile) {
             // write out PEM-keyfile here
-            x509_write_keyfile(&key, keyfile, X509_OUTPUT_PEM); 
+            x509write_keyfile(&key, keyfile, X509_OUTPUT_PEM); 
         }
     }
     else if(keyfile) {
@@ -750,10 +750,11 @@ int main(int argc, char** argv)
     if(genstuff && servermode) {
         // generate self signed certificate
         ILOG("Generating x509 certificate");
-        x509_init_raw(&raw_cert);
+        x509write_init_raw(&raw_cert);
 
-        x509_add_pubkey(&raw_cert,&key);
-        x509_create_subject(&raw_cert,cert_subject);
+        x509write_add_pubkey(&raw_cert,&key);
+        x509write_add_subject(&raw_cert,cert_subject);
+        x509write_add_issuer(&raw_cert,cert_subject);
         
         struct tm *tm;
         tm=gmtime(&cert_notbefore);
@@ -765,18 +766,18 @@ int main(int argc, char** argv)
         tm=gmtime(&cert_notafter);
         strftime(notafter,sizeof(notafter),"%Y-%m-%d %H:%M:%S %Z",tm);
         
-        x509_create_validity(&raw_cert,notbefore,notafter); 
-        x509_create_selfsign(&raw_cert,&key);
+        x509write_add_validity(&raw_cert,notbefore,notafter); 
+        x509write_create_selfsign(&raw_cert,&key);
         
         if(certfile) {
             // write cert in PEM format
-            x509_write_crtfile(&raw_cert, certfile, X509_OUTPUT_PEM);       
+            x509write_crtfile(&raw_cert, certfile, X509_OUTPUT_PEM);       
         }
         
         // convert raw to cert.
         x509parse_crt(&cert, raw_cert.raw.data, raw_cert.raw.len);
         
-        x509_free_raw(&raw_cert);
+        x509write_free_raw(&raw_cert);
     }
     else if(certfile) {
         ILOG("Loading the server certificate");
