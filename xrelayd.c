@@ -90,13 +90,14 @@ void dolog(int prio, const char *fmt, ...);
  */
 int xrly_ciphers[] =
 {
-#if !defined(NO_AES)
+#if defined(XYSSL_AES_C)
+    SSL_RSA_AES_128_SHA,
     SSL_RSA_AES_256_SHA,
 #endif
-#if !defined(NO_DES)
+#if defined(XYSSL_DES_C)
     SSL_RSA_DES_168_SHA,
 #endif
-#if !defined(NO_ARC4)
+#if defined(XYSSL_ARC4_C)
     SSL_RSA_RC4_128_SHA,
     SSL_RSA_RC4_128_MD5,
 #endif
