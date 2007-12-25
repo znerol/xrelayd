@@ -56,6 +56,7 @@
 #include <syslog.h>
 
 /* xassl includes */
+#include <xyssl/config.h>
 #include <xyssl/havege.h>
 #include <xyssl/certs.h>
 #include <xyssl/x509.h>
