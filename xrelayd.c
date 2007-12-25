@@ -491,7 +491,7 @@ void proxy_connection(
                 DLOG("trying to write on plain fd %d",*plain_fd);
                 if((wret = proxy_send_all(net_send, (void*)plain_fd, buf, rret, &done)) < 0) break;
                 DLOG("write: plain complete");
-            } while(0);
+            } while(rret > 0 && rret == wret);
             
             if(handle_sockres("read","ssl",rret)) break;
             if(handle_sockres("write","plain",wret)) break;
@@ -510,7 +510,7 @@ void proxy_connection(
                 DLOG("trying to write on ssl fd %d",*ssl_fd);
                 if((wret = proxy_send_all(ssl_write, (void*)&ssl, buf, rret, &done)) < 0) break;
                 DLOG("write: ssl complete");
-            } while(0);
+            } while(rret > 0 && rret == wret);
             
             if(handle_sockres("read","plain",rret)) break;
             if(handle_sockres("write","ssl",wret)) break;
